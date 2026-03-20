@@ -29,46 +29,54 @@ class CandClassifier(QWidget):
         # Track classifications:
         #   { filename: { timescale: label, ... }, ... }
         self._classifications = {}
+        # Track notes: { filename: note_text }
+        self._notes = {}
         self._load_existing_csv()
 
         self._auto_enabled = False
         self._auto_speed_value = 2
 
+        # Debounce resize events so image only rescales once window has settled
+        self._resize_timer = QTimer()
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._scale_image)
+
         main_box = QVBoxLayout()
-        main_box.setContentsMargins(10, 5, 10, 10)
-        main_box.setSpacing(5)
+        main_box.setContentsMargins(8, 4, 8, 6)
+        main_box.setSpacing(3)
 
         # Image display
         self._plot_label = QLabel()
         self._plot_label.setAlignment(Qt.AlignCenter)
         self._plot_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._plot_label.setMaximumHeight(600)
         main_box.addWidget(self._plot_label)
 
         # Current candidate info
         current_box = QHBoxLayout()
         self._current_cand_select = QLineEdit()
-        self._current_cand_select.setFixedSize(80, 28)
+        self._current_cand_select.setFixedSize(60, 24)
         self._current_cand_select.setText("1")
-        self._current_cand_select.setStyleSheet("font-size: 16px;")
+        self._current_cand_select.setStyleSheet("font-size: 13px;")
         self._current_cand_select.returnPressed.connect(self._set_cand)
         current_box.addWidget(self._current_cand_select)
         self._cand_label = QLabel()
-        self._cand_label.setStyleSheet("font-size: 16px;")
+        self._cand_label.setStyleSheet("font-size: 13px;")
         self._cand_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         current_box.addWidget(self._cand_label)
         current_box.addStretch()
 
         # Timescale indicator
         timescale_label = QLabel(f"Timescale: {self._timescale}")
-        timescale_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2980b9;")
+        timescale_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #2980b9;")
         current_box.addWidget(timescale_label)
 
         main_box.addLayout(current_box)
 
         # --- Classification buttons ---
         classify_box = QHBoxLayout()
-        classify_box.setContentsMargins(40, 4, 0, 4)
-        classify_box.setSpacing(16)
+        classify_box.setContentsMargins(20, 2, 0, 2)
+        classify_box.setSpacing(10)
 
         self._real_button = self._make_button("Real", "#2ecc71", lambda: self._classify("real"))
         self._not_variable_button = self._make_button("Not variable", "#f39c12", lambda: self._classify("not variable"))
@@ -82,18 +90,33 @@ class CandClassifier(QWidget):
 
         # --- Status label showing current classification ---
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("font-size: 14px; color: #555;")
-        self._status_label.setContentsMargins(40, 0, 0, 0)
+        self._status_label.setStyleSheet("font-size: 12px; color: #555;")
+        self._status_label.setContentsMargins(20, 0, 0, 0)
         main_box.addWidget(self._status_label)
+
+        # --- Notes box ---
+        notes_box = QHBoxLayout()
+        notes_box.setContentsMargins(20, 0, 0, 0)
+        notes_label = QLabel("Notes:")
+        notes_label.setStyleSheet("font-size: 12px;")
+        notes_label.setFixedWidth(45)
+        notes_box.addWidget(notes_label)
+        self._notes_edit = QLineEdit()
+        self._notes_edit.setStyleSheet("font-size: 12px;")
+        self._notes_edit.setFixedHeight(24)
+        self._notes_edit.setPlaceholderText("Optional note for this source...")
+        self._notes_edit.textChanged.connect(self._save_note)
+        notes_box.addWidget(self._notes_edit)
+        main_box.addLayout(notes_box)
 
         # --- Navigation ---
         nav_box = QHBoxLayout()
-        self._skip_start_button = self._make_nav_button("|<", self._skip_start_press, 30)
-        self._prev_skip_button = self._make_nav_button("<<", self._previous_skip_press, 45)
+        self._skip_start_button = self._make_nav_button("|<", self._skip_start_press, 28)
+        self._prev_skip_button = self._make_nav_button("<<", self._previous_skip_press, 36)
         self._prev_button = self._make_nav_button("<", self._previous_press)
         self._next_button = self._make_nav_button(">", self._next_press)
-        self._next_skip_button = self._make_nav_button(">>", self._next_skip_press, 45)
-        self._skip_end_button = self._make_nav_button(">|", self._skip_end_press, 30)
+        self._next_skip_button = self._make_nav_button(">>", self._next_skip_press, 36)
+        self._skip_end_button = self._make_nav_button(">|", self._skip_end_press, 28)
 
         for btn in [self._skip_start_button, self._prev_skip_button,
                     self._prev_button, self._next_button,
@@ -105,7 +128,7 @@ class CandClassifier(QWidget):
         self._auto_timer = QTimer()
         self._auto_timer.timeout.connect(self._next_press)
         auto_label = QLabel("Auto:")
-        auto_label.setStyleSheet("font-size: 14px;")
+        auto_label.setStyleSheet("font-size: 12px;")
         nav_box.addWidget(auto_label)
         self._auto_enable = QCheckBox()
         self._auto_enable.stateChanged.connect(self._enable_auto)
@@ -114,10 +137,11 @@ class CandClassifier(QWidget):
         self._auto_speed.setMinimum(1)
         self._auto_speed.setMaximum(10)
         self._auto_speed.setValue(self._auto_speed_value)
+        self._auto_speed.setFixedHeight(24)
         self._auto_speed.valueChanged.connect(self._change_auto_speed)
         nav_box.addWidget(self._auto_speed)
         speed_label = QLabel("img/s")
-        speed_label.setStyleSheet("font-size: 14px;")
+        speed_label.setStyleSheet("font-size: 12px;")
         nav_box.addWidget(speed_label)
 
         main_box.addLayout(nav_box)
@@ -125,20 +149,19 @@ class CandClassifier(QWidget):
         # Summary counts
         summary_box = QHBoxLayout()
         self._summary_label = QLabel("Classified: 0")
-        self._summary_label.setStyleSheet("font-size: 14px; color: #333;")
+        self._summary_label.setStyleSheet("font-size: 12px; color: #333;")
         summary_box.addWidget(self._summary_label)
         summary_box.addStretch()
         main_box.addLayout(summary_box)
 
         # Help text
         help_label = QLabel("Keys: Z=prev  X=next  1=Real  2=Not variable  3=Artefact  V=auto")
-        help_label.setStyleSheet("font-size: 12px; color: #888;")
+        help_label.setStyleSheet("font-size: 11px; color: #888;")
         main_box.addWidget(help_label)
 
         self.setLayout(main_box)
         self.setWindowTitle(f"Image Classifier  —  Timescale: {self._timescale}")
-        self.setGeometry(150, 150, 1280, 900)
-        self.show()
+        self.showMaximized()
 
         if self._total_cands > 0:
             self._show_cand(0)
@@ -149,14 +172,14 @@ class CandClassifier(QWidget):
 
     def _make_button(self, text, color, callback):
         btn = QPushButton(text)
-        btn.setFixedSize(120, 40)
+        btn.setFixedSize(100, 32)
         btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {color};
                 color: white;
                 font-weight: bold;
-                font-size: 16px;
-                border-radius: 5px;
+                font-size: 13px;
+                border-radius: 4px;
             }}
             QPushButton[selected="true"] {{
                 border: 3px solid black;
@@ -175,12 +198,12 @@ class CandClassifier(QWidget):
     # --- CSV persistence ---
     #
     # CSV format:
-    #   filename,    1s,       10s,      30s
-    #   source_A,    real,     artefact, real
-    #   source_B,    artefact, ,         real
+    #   filename,    1s,       10s,      30s,      notes
+    #   source_A,    real,     artefact, real,     interesting shape
+    #   source_B,    artefact, ,         real,
     #
-    # The header row lists all timescales as columns.
-    # Each new timescale run adds a new column.
+    # The header row lists all timescales as columns, with notes last.
+    # Each new timescale run adds a new column before notes.
 
     def _load_existing_csv(self):
         csv_path = self._csv_path
@@ -194,11 +217,13 @@ class CandClassifier(QWidget):
         if not rows:
             return
 
-        # First row is the header: filename, ts1, ts2, ...
         header = rows[0]
         if len(header) < 2:
             return
-        timescales = header[1:]  # list of timescale column names
+
+        # Strip "notes" from the end of the header if present
+        has_notes = header[-1].strip().lower() == "notes"
+        timescales = header[1:-1] if has_notes else header[1:]
 
         for row in rows[1:]:
             if not row:
@@ -211,6 +236,9 @@ class CandClassifier(QWidget):
                 if ts:
                     ts_dict[ts] = label
             self._classifications[filename] = ts_dict
+            if has_notes:
+                notes_col = len(timescales) + 1
+                self._notes[filename] = row[notes_col] if notes_col < len(row) else ""
 
     def _save_classification(self, cand_name):
         csv_path = self._csv_path
@@ -225,13 +253,14 @@ class CandClassifier(QWidget):
         if self._timescale not in all_timescales:
             all_timescales.append(self._timescale)
 
-        # Header row
-        header = ["filename"] + all_timescales
+        # Header row — notes always last
+        header = ["filename"] + all_timescales + ["notes"]
 
         # Data rows, sorted by filename
         data_rows = []
         for filename, ts_dict in sorted(self._classifications.items()):
-            row = [filename] + [ts_dict.get(ts, "") for ts in all_timescales]
+            note = self._notes.get(filename, "")
+            row = [filename] + [ts_dict.get(ts, "") for ts in all_timescales] + [note]
             data_rows.append(row)
 
         with open(tmp_path, "w", newline="") as f:
@@ -242,6 +271,15 @@ class CandClassifier(QWidget):
         move(tmp_path, csv_path)
 
     # --- Classification logic ---
+
+    def _save_note(self):
+        if self._total_cands == 0:
+            return
+        cand_name = basename(self._cand_plots[self._current_cand])
+        self._notes[cand_name] = self._notes_edit.text()
+        if cand_name not in self._classifications:
+            self._classifications[cand_name] = {}
+        self._save_classification(cand_name)
 
     def _classify(self, label):
         if self._total_cands == 0:
@@ -313,19 +351,25 @@ class CandClassifier(QWidget):
         self._cand_label.setText(f"of {self._total_cands}: {basename(self._cand_plots[idx])}")
         self._update_status()
         self._update_button_highlight()
+        # Load existing note for this candidate
+        cand_name = basename(self._cand_plots[idx])
+        self._notes_edit.setText(self._notes.get(cand_name, ""))
 
     def _scale_image(self):
         if not hasattr(self, "_current_pixmap") or self._current_pixmap is None:
             return
-        w = self.width() - 20
-        h = self.height() - 220
+        # Use the label's actual allocated size, capped to avoid over-expansion
+        w = self._plot_label.width()
+        h = self._plot_label.height()
+        if w < 10 or h < 10:
+            return
         scaled = self._current_pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self._plot_label.setPixmap(scaled)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._total_cands > 0:
-            self._scale_image()
+            self._resize_timer.start(100)  # wait 100ms after last resize before rescaling
 
     def _set_cand(self):
         self._plot_label.setFocus()
