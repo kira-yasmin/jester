@@ -9,5 +9,6 @@
 2. **Install using git clone:**
    
 3. **Run from the command line:**
-   ```python main.py -d /path/to/directory -c /path/to/where/you/want/to/store/results.csv
+   ```bash
+   python main.py -d /path/to/directory -c /path/to/where/you/want/to/store/results.csv
    ```
