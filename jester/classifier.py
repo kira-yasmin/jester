@@ -8,24 +8,26 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QLineEdit,
-    QHBoxLayout, QVBoxLayout, QCheckBox, QSpinBox
+    QHBoxLayout, QVBoxLayout, QCheckBox, QSpinBox, QSizePolicy
 )
 
 
 class CandClassifier(QWidget):
 
-    def __init__(self, directory, output, extension):
+    def __init__(self, directory, csv_path, extension, timescale):
 
         super().__init__()
 
         self._directory = directory
-        self._output_file_name = output
+        self._csv_path = csv_path
         self._extension = extension
+        self._timescale = timescale
         self._cand_plots = sorted(glob(path.join(directory, "*." + extension)))
         self._total_cands = len(self._cand_plots)
         self._current_cand = 0
 
-        # Track classifications: dict mapping filename -> (looks_real, worth_investigating)
+        # Track classifications:
+        #   { filename: { timescale: label, ... }, ... }
         self._classifications = {}
         self._load_existing_csv()
 
@@ -39,6 +41,7 @@ class CandClassifier(QWidget):
         # Image display
         self._plot_label = QLabel()
         self._plot_label.setAlignment(Qt.AlignCenter)
+        self._plot_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         main_box.addWidget(self._plot_label)
 
         # Current candidate info
@@ -54,49 +57,33 @@ class CandClassifier(QWidget):
         self._cand_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         current_box.addWidget(self._cand_label)
         current_box.addStretch()
+
+        # Timescale indicator
+        timescale_label = QLabel(f"Timescale: {self._timescale}")
+        timescale_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2980b9;")
+        current_box.addWidget(timescale_label)
+
         main_box.addLayout(current_box)
 
         # --- Classification buttons ---
-        classify_box = QVBoxLayout()
-        classify_box.setSpacing(8)
+        classify_box = QHBoxLayout()
+        classify_box.setContentsMargins(40, 4, 0, 4)
+        classify_box.setSpacing(16)
 
-        # Row 1: Looks real?
-        real_row = QHBoxLayout()
-        real_label = QLabel("Looks real?")
-        real_label.setStyleSheet("font-weight: bold; font-size: 16px;")
-        real_label.setFixedWidth(160)
-        real_row.addWidget(real_label)
+        self._real_button = self._make_button("Real", "#2ecc71", lambda: self._classify("real"))
+        self._not_variable_button = self._make_button("Not variable", "#f39c12", lambda: self._classify("not variable"))
+        self._artefact_button = self._make_button("Artefact", "#e74c3c", lambda: self._classify("artefact"))
 
-        self._real_yes = self._make_button("Yes", "#2ecc71", lambda: self._classify("real", "yes"))
-        self._real_maybe = self._make_button("Maybe", "#f39c12", lambda: self._classify("real", "maybe"))
-        self._real_no = self._make_button("No", "#e74c3c", lambda: self._classify("real", "no"))
-
-        for btn in [self._real_yes, self._real_maybe, self._real_no]:
-            real_row.addWidget(btn)
-        real_row.addStretch()
-        classify_box.addLayout(real_row)
-
-        # Row 2: Worth investigating?
-        invest_row = QHBoxLayout()
-        invest_label = QLabel("Worth investigating?")
-        invest_label.setStyleSheet("font-weight: bold; font-size: 16px;")
-        invest_label.setFixedWidth(160)
-        invest_row.addWidget(invest_label)
-
-        self._invest_yes = self._make_button("Yes", "#2ecc71", lambda: self._classify("investigate", "yes"))
-        self._invest_maybe = self._make_button("Maybe", "#f39c12", lambda: self._classify("investigate", "maybe"))
-        self._invest_no = self._make_button("No", "#e74c3c", lambda: self._classify("investigate", "no"))
-
-        for btn in [self._invest_yes, self._invest_maybe, self._invest_no]:
-            invest_row.addWidget(btn)
-        invest_row.addStretch()
-        classify_box.addLayout(invest_row)
-
+        classify_box.addWidget(self._real_button)
+        classify_box.addWidget(self._not_variable_button)
+        classify_box.addWidget(self._artefact_button)
+        classify_box.addStretch()
         main_box.addLayout(classify_box)
 
         # --- Status label showing current classification ---
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("font-size: 14px; color: #555;")
+        self._status_label.setContentsMargins(40, 0, 0, 0)
         main_box.addWidget(self._status_label)
 
         # --- Navigation ---
@@ -144,13 +131,13 @@ class CandClassifier(QWidget):
         main_box.addLayout(summary_box)
 
         # Help text
-        help_label = QLabel("Keys: Z=prev  X=next  1=Real:Yes  2=Real:Maybe  3=Real:No  4=Invest:Yes  5=Invest:Maybe  6=Invest:No  V=auto")
+        help_label = QLabel("Keys: Z=prev  X=next  1=Real  2=Not variable  3=Artefact  V=auto")
         help_label.setStyleSheet("font-size: 12px; color: #888;")
         main_box.addWidget(help_label)
 
         self.setLayout(main_box)
-        self.setWindowTitle("Image Classifier")
-        self.setGeometry(150, 150, 960, 780)
+        self.setWindowTitle(f"Image Classifier  —  Timescale: {self._timescale}")
+        self.setGeometry(150, 150, 1280, 900)
         self.show()
 
         if self._total_cands > 0:
@@ -171,9 +158,6 @@ class CandClassifier(QWidget):
                 font-size: 16px;
                 border-radius: 5px;
             }}
-            QPushButton:hover {{
-                opacity: 0.85;
-            }}
             QPushButton[selected="true"] {{
                 border: 3px solid black;
             }}
@@ -189,76 +173,131 @@ class CandClassifier(QWidget):
         return btn
 
     # --- CSV persistence ---
+    #
+    # CSV format:
+    #   filename,    1s,       10s,      30s
+    #   source_A,    real,     artefact, real
+    #   source_B,    artefact, ,         real
+    #
+    # The header row lists all timescales as columns.
+    # Each new timescale run adds a new column.
 
     def _load_existing_csv(self):
-        csv_path = path.join(self._directory, self._output_file_name)
-        if isfile(csv_path):
-            with open(csv_path, "r") as f:
-                r = reader(f, delimiter=",")
-                for row in r:
-                    if len(row) >= 3:
-                        self._classifications[row[0]] = {"real": row[1], "investigate": row[2]}
+        csv_path = self._csv_path
+        if not isfile(csv_path):
+            return
+
+        with open(csv_path, "r") as f:
+            r = reader(f, delimiter=",")
+            rows = list(r)
+
+        if not rows:
+            return
+
+        # First row is the header: filename, ts1, ts2, ...
+        header = rows[0]
+        if len(header) < 2:
+            return
+        timescales = header[1:]  # list of timescale column names
+
+        for row in rows[1:]:
+            if not row:
+                continue
+            filename = row[0]
+            ts_dict = {}
+            for i, ts in enumerate(timescales):
+                col = i + 1
+                label = row[col] if col < len(row) else ""
+                if ts:
+                    ts_dict[ts] = label
+            self._classifications[filename] = ts_dict
 
     def _save_classification(self, cand_name):
-        csv_path = path.join(self._directory, self._output_file_name)
+        csv_path = self._csv_path
         tmp_path = csv_path + ".tmp"
-        classification = self._classifications.get(cand_name, {})
 
-        # Rewrite entire CSV (keeps it clean and consistent)
-        rows = []
-        written = False
-        if isfile(csv_path):
-            with open(csv_path, "r") as f:
-                r = reader(f, delimiter=",")
-                for row in r:
-                    if len(row) >= 1 and row[0] == cand_name:
-                        rows.append([cand_name,
-                                     classification.get("real", ""),
-                                     classification.get("investigate", "")])
-                        written = True
-                    else:
-                        rows.append(row)
+        # Collect all timescales seen, preserving order of first appearance
+        all_timescales = []
+        for ts_dict in self._classifications.values():
+            for ts in ts_dict:
+                if ts not in all_timescales:
+                    all_timescales.append(ts)
+        if self._timescale not in all_timescales:
+            all_timescales.append(self._timescale)
 
-        if not written:
-            rows.append([cand_name,
-                         classification.get("real", ""),
-                         classification.get("investigate", "")])
+        # Header row
+        header = ["filename"] + all_timescales
+
+        # Data rows, sorted by filename
+        data_rows = []
+        for filename, ts_dict in sorted(self._classifications.items()):
+            row = [filename] + [ts_dict.get(ts, "") for ts in all_timescales]
+            data_rows.append(row)
 
         with open(tmp_path, "w", newline="") as f:
             w = writer(f, delimiter=",")
-            w.writerows(rows)
+            w.writerow(header)
+            w.writerows(data_rows)
 
         move(tmp_path, csv_path)
 
     # --- Classification logic ---
 
-    def _classify(self, question, answer):
+    def _classify(self, label):
         if self._total_cands == 0:
             return
 
         cand_name = basename(self._cand_plots[self._current_cand])
         if cand_name not in self._classifications:
             self._classifications[cand_name] = {}
-        self._classifications[cand_name][question] = answer
+        self._classifications[cand_name][self._timescale] = label
         self._save_classification(cand_name)
         self._update_status()
+        self._update_button_highlight()
         self._update_summary()
 
     def _update_status(self):
         if self._total_cands == 0:
             return
         cand_name = basename(self._cand_plots[self._current_cand])
-        c = self._classifications.get(cand_name, {})
-        real = c.get("real", "—")
-        invest = c.get("investigate", "—")
-        self._status_label.setText(f"Current: Looks real = {real}   |   Worth investigating = {invest}")
+        ts_dict = self._classifications.get(cand_name, {})
+
+        # Show label for current timescale prominently, others as context
+        current_label = ts_dict.get(self._timescale, "—")
+        other_parts = [f"{ts}: {lbl}" for ts, lbl in ts_dict.items() if ts != self._timescale and lbl]
+        status = f"[{self._timescale}] {current_label}"
+        if other_parts:
+            status += "   |   Other timescales: " + "  ".join(other_parts)
+        self._status_label.setText(status)
+
+    def _update_button_highlight(self):
+        if self._total_cands == 0:
+            return
+        cand_name = basename(self._cand_plots[self._current_cand])
+        label = self._classifications.get(cand_name, {}).get(self._timescale, "")
+
+        self._real_button.setProperty("selected", label == "real")
+        self._not_variable_button.setProperty("selected", label == "not variable")
+        self._artefact_button.setProperty("selected", label == "artefact")
+
+        for btn in [self._real_button, self._not_variable_button, self._artefact_button]:
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def _update_summary(self):
-        total_classified = sum(
-            1 for c in self._classifications.values()
-            if c.get("real") or c.get("investigate")
+        # Count only classifications for the current timescale
+        labels = [
+            ts_dict.get(self._timescale, "")
+            for ts_dict in self._classifications.values()
+        ]
+        total_classified = sum(1 for l in labels if l)
+        real_count = sum(1 for l in labels if l == "real")
+        not_variable_count = sum(1 for l in labels if l == "not variable")
+        artefact_count = sum(1 for l in labels if l == "artefact")
+        self._summary_label.setText(
+            f"[{self._timescale}]  Classified: {total_classified} / {self._total_cands}   "
+            f"(Real: {real_count}  |  Not variable: {not_variable_count}  |  Artefact: {artefact_count})"
         )
-        self._summary_label.setText(f"Classified: {total_classified} / {self._total_cands}")
 
     # --- Navigation ---
 
@@ -267,15 +306,26 @@ class CandClassifier(QWidget):
             return
 
         self._current_cand = idx
-        cand_map = QPixmap(self._cand_plots[idx])
-
-        # Scale image to fit a fixed display area, preserving aspect ratio
-        scaled = cand_map.scaled(900, 550, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self._plot_label.setPixmap(scaled)
+        self._current_pixmap = QPixmap(self._cand_plots[idx])
+        self._scale_image()
 
         self._current_cand_select.setText(str(idx + 1))
         self._cand_label.setText(f"of {self._total_cands}: {basename(self._cand_plots[idx])}")
         self._update_status()
+        self._update_button_highlight()
+
+    def _scale_image(self):
+        if not hasattr(self, "_current_pixmap") or self._current_pixmap is None:
+            return
+        w = self.width() - 20
+        h = self.height() - 220
+        scaled = self._current_pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._plot_label.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._total_cands > 0:
+            self._scale_image()
 
     def _set_cand(self):
         self._plot_label.setFocus()
@@ -332,15 +382,9 @@ class CandClassifier(QWidget):
             Qt.Key_PageUp: self._next_skip_press,
             Qt.Key_Home: self._skip_start_press,
             Qt.Key_End: self._skip_end_press,
-            # Looks real
-            Qt.Key_1: lambda: self._classify("real", "yes"),
-            Qt.Key_2: lambda: self._classify("real", "maybe"),
-            Qt.Key_3: lambda: self._classify("real", "no"),
-            # Worth investigating
-            Qt.Key_4: lambda: self._classify("investigate", "yes"),
-            Qt.Key_5: lambda: self._classify("investigate", "maybe"),
-            Qt.Key_6: lambda: self._classify("investigate", "no"),
-            # Auto toggle
+            Qt.Key_1: lambda: self._classify("real"),
+            Qt.Key_2: lambda: self._classify("not variable"),
+            Qt.Key_3: lambda: self._classify("artefact"),
             Qt.Key_V: self._auto_enable.nextCheckState,
         }
 
