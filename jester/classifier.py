@@ -161,7 +161,8 @@ class CandClassifier(QWidget):
 
         self.setLayout(main_box)
         self.setWindowTitle(f"Image Classifier  —  Timescale: {self._timescale}")
-        self.showMaximized()
+        self.resize(1000, 750)
+        self.show()
 
         if self._total_cands > 0:
             self._show_cand(0)
