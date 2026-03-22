@@ -4,7 +4,7 @@ from os import path
 from os.path import basename, isfile
 from shutil import move
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QObject, QEvent
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QLineEdit,
@@ -59,6 +59,7 @@ class CandClassifier(QWidget):
         self._current_cand_select.setText("1")
         self._current_cand_select.setStyleSheet("font-size: 13px;")
         self._current_cand_select.returnPressed.connect(self._set_cand)
+        self._current_cand_select.installEventFilter(self)
         current_box.addWidget(self._current_cand_select)
         self._cand_label = QLabel()
         self._cand_label.setStyleSheet("font-size: 13px;")
@@ -106,6 +107,7 @@ class CandClassifier(QWidget):
         self._notes_edit.setFixedHeight(24)
         self._notes_edit.setPlaceholderText("Optional note for this source...")
         self._notes_edit.textChanged.connect(self._save_note)
+        self._notes_edit.installEventFilter(self)
         notes_box.addWidget(self._notes_edit)
         main_box.addLayout(notes_box)
 
@@ -155,7 +157,7 @@ class CandClassifier(QWidget):
         main_box.addLayout(summary_box)
 
         # Help text
-        help_label = QLabel("Keys: Z=prev  X=next  1=Real  2=Not variable  3=Artefact  V=auto")
+        help_label = QLabel("Keys: Z=prev  X=next  1=Real  2=Not variable  3=Artefact  V=auto  |  Press Esc to exit Notes field")
         help_label.setStyleSheet("font-size: 11px; color: #888;")
         main_box.addWidget(help_label)
 
@@ -163,6 +165,7 @@ class CandClassifier(QWidget):
         self.setWindowTitle(f"Image Classifier  —  Timescale: {self._timescale}")
         self.resize(1000, 750)
         self.show()
+        self.setFocus()  # ensure shortcuts work immediately, not the candidate field
 
         if self._total_cands > 0:
             self._show_cand(0)
@@ -412,9 +415,28 @@ class CandClassifier(QWidget):
         if self._auto_enabled:
             self._auto_timer.start(int(1000 / value))
 
+    # --- Event filter (notes field keyboard handling) ---
+
+    def eventFilter(self, obj, event):
+        """Intercept key presses in text fields.
+
+        Escape releases focus back to the main widget so all shortcuts work
+        again. Every other key is handled normally by the line edit.
+        """
+        if obj in (self._notes_edit, self._current_cand_select) and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                self.setFocus()
+                return True  # consume the event
+        return super().eventFilter(obj, event)
+
     # --- Keyboard shortcuts ---
 
     def keyPressEvent(self, event):
+        # Don't steal keypresses while the user is typing in a text field
+        if self._notes_edit.hasFocus() or self._current_cand_select.hasFocus():
+            super().keyPressEvent(event)
+            return
+
         key = event.key()
 
         if self._auto_enabled and key not in (Qt.Key_V,):
