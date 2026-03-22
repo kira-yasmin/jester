@@ -3,7 +3,7 @@ python main.py -d /path/to/files
 python main.py -d /path/to/cutouts_xxxx_xxxx_15s/xxxx -c /path/to/results.csv
 
 Second last directory always needs to end in _xxs, as this will be extracted and used as the timescale. Example and modified code specific for working
-with TRON outputs.
+with TRON outputs. Otherwise just use -t to override timescale.
 
 For example:
 
