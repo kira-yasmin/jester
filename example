@@ -8,3 +8,6 @@ with TRON outputs.
 For example:
 
 python main.py -d /path/to/cutouts_1572120061_LMC1R12C08_8s/eta_V_MAD_high -c /path/to/results.csv
+
+To see options:
+python main.py -h 
