@@ -1,20 +1,15 @@
 import argparse as ap
 import logging
-
 from os.path import isdir, isfile, abspath, join, basename
 from sys import exit
-
 from PyQt5.QtWidgets import QApplication
-
 from jester.classifier import CandClassifier as CandClass
 
 logger = logging.getLogger()
 
 def main():
-
     parser = ap.ArgumentParser(description="Classifier for MeerTRAP",
                                usage="%(prog)s <options>")
-
     parser.add_argument("-d", "--directory", help="Input data directory",
                         required=True,
                         type=str)
@@ -31,30 +26,28 @@ def main():
                         type=str,
                         default=None)
     parser.add_argument("-t", "--timescale", help="Timescale being classified (e.g. 1s, 10s, 30s). "
-                        "If not specified, inferred from the last _-separated part of the parent directory name.",
+                        "If not specified, inferred from the last _-separated part of the directory name.",
                         required=False,
                         type=str,
                         default=None)
-
     arguments = parser.parse_args()
 
     if not isdir(arguments.directory):
         logger.error(f"Directory {arguments.directory} does not exist!")
         exit()
 
-    # Infer timescale from parent directory name if not specified
+    # Infer timescale from directory name if not specified
     if arguments.timescale:
         timescale = arguments.timescale
     else:
-        # e.g. .../cutouts_1572120061_LMC1R12C08_8s/eta_V_high -> parent is cutouts_..._8s -> last part is 8s
-        parent_dir = basename(abspath(join(arguments.directory, "..")))
-        timescale = parent_dir.split("_")[-1]
-        logger.info(f"No timescale specified, inferred '{timescale}' from directory name '{parent_dir}'")
+        # e.g. cutouts_1572120061_LMC1R12C08_8s -> last part is 8s
+        dir_name = basename(abspath(arguments.directory))
+        timescale = dir_name.split("_")[-1]
+        logger.info(f"No timescale specified, inferred '{timescale}' from directory name '{dir_name}'")
 
     # If -c is given, use it as the full CSV path; otherwise fall back to -o inside the directory
     if arguments.csv:
         csv_path = abspath(arguments.csv)
-        # If the user passed a directory instead of a file, append the default filename
         if isdir(csv_path):
             csv_path = join(csv_path, arguments.output)
     else:
@@ -62,7 +55,6 @@ def main():
 
     app = QApplication([])
     cc = CandClass(arguments.directory, csv_path, arguments.extension, timescale)
-
     try:
         app.exec()
     except Exception as exc:
